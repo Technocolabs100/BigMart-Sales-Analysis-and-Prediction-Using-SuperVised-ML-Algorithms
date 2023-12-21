@@ -5,10 +5,22 @@ import numpy as np
 import textwrap
 from scipy.stats import mode
 from sklearn.compose import ColumnTransformer
+from sklearn.decomposition import PCA
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import MinMaxScaler, OrdinalEncoder
+from sklearn.preprocessing import MinMaxScaler, OrdinalEncoder,StandardScaler
 from sklearn.metrics import accuracy_score, mean_squared_error
+from sklearn.preprocessing import OneHotEncoder
+
+NUM_COLUMNS = ["Item_Weight","Item_Visibility","Item_MRP","Item_Outlet_Sales","Outlet_Age"]  
+
+CAT_COLUMNS = []
+
+OHE_COLUNMS = ["Item_Type","Outlet_Type","Outlet_Location_Type","Item_Fat_Content","Outlet_Size","Outlet_Identifier"]
+
+categorical_columns = ["Item_Fat_Content","Item_Type","Outlet_Location_Type","Outlet_Type","Outlet_Establishment_Year","Outlet_Size"]
+
+
 def find_outliers_iqr(column):
     q1 = np.percentile(column, 25)
     q3 = np.percentile(column, 75)
@@ -64,8 +76,8 @@ def dist_plot(data):
     
 
 
-def wrap_labels(ax, width, break_long_words=False):
-    
+def wrap_labels(ax, width,break_long_words=False ,**kwargs):
+    rot = kwargs.get("rot", 0) 
     """
     Wrap x-axis tick labels to fit within a specified width.
 
@@ -83,7 +95,7 @@ def wrap_labels(ax, width, break_long_words=False):
         text = label.get_text()
         labels.append(textwrap.fill(text, width=width,
                       break_long_words=break_long_words))
-    ax.set_xticklabels(labels, rotation=0)
+    ax.set_xticklabels(labels, rotation=rot)
 
 
 def subplot(num_columns, width, height, data, columns, fun, wrap=False, **kwargs):
@@ -104,7 +116,7 @@ def subplot(num_columns, width, height, data, columns, fun, wrap=False, **kwargs
     """
     num_rows = -(-len(columns) // num_columns)  # Ceil division
 
-    fig, axes = plt.subplots(num_rows, num_columns, figsize=(width, height))
+    _, axes = plt.subplots(num_rows, num_columns, figsize=(width, height))
     
     if num_rows == 1:
         axes = axes.reshape(1, -1)
@@ -115,31 +127,51 @@ def subplot(num_columns, width, height, data, columns, fun, wrap=False, **kwargs
         if i < len(columns):
             column_name = columns[i]
 
-            fun(ax=ax, data=data[column_name], **kwargs)
+            fun(data , column_name, ax, **kwargs)
             if wrap == True :
-                wrap_labels(ax, 10)
+                wrap_labels(ax, 10,**kwargs)
                 ax.figure
 
 
     plt.tight_layout()
     plt.show()
 
-def preprocess_data(df, target_column,categorical_columns,numerical_columns):
+def encoder(num, cat, ohe, pca_num_components=None):
+    transformers = [
+        ('num', StandardScaler(), num),
+        ('cat', OrdinalEncoder(), cat),
+        ('OHE', OneHotEncoder(), ohe)
+    ]
 
-    X_train = df.drop([target_column], axis=1)
-    y_train = df[target_column]
-    
-    X_train, X_test, y_train, y_test = train_test_split(X_train, y_train, test_size=0.2, random_state=42)
+    # Add PCA if specified
+    if pca_num_components is not None:
+        transformers.append(('PCA', PCA(n_components=pca_num_components), num))
 
-    preprocessor = ColumnTransformer(
-        transformers=[
-            ('num', MinMaxScaler(), numerical_columns),
-            ('cat', OrdinalEncoder(), categorical_columns)
-        ])
-    
-    return preprocessor,X_train, X_test, y_train, y_test
+    preprocessor = ColumnTransformer(transformers=transformers)
+    return preprocessor
 
-def preprocess_data_for_nulls(df, target_column,categorical_columns,numerical_columns):
+def preprocess_data(data, target_column):
+    categorical_columns_copy = CAT_COLUMNS.copy()
+    numerical_columns_copy = NUM_COLUMNS.copy()
+
+    if target_column in categorical_columns_copy:
+        categorical_columns_copy.remove(target_column)
+    else:
+        numerical_columns_copy.remove(target_column)
+
+    X = data.drop([target_column], axis=1)
+    y = data[target_column]
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    preprocessor = encoder(numerical_columns_copy,categorical_columns_copy,OHE_COLUNMS)
+    X_train_preprocessed = preprocessor.fit_transform(X_train)
+    X_test_preprocessed = preprocessor.transform(X_test)
+
+    return X_train_preprocessed, X_test_preprocessed, y_train, y_test, preprocessor
+
+
+def preprocess_data_for_nulls(df, target_column, sec = 0 ):
     """
     Preprocesses the input DataFrame for machine learning, preparing it for training and prediction.
 
@@ -148,6 +180,8 @@ def preprocess_data_for_nulls(df, target_column,categorical_columns,numerical_co
         The input DataFrame containing features and the target column.
     - target_column: str
         The name of the target column to be predicted.
+    - numerical_columns_copy: list or None, optional
+        List of numerical columns. If None, it defaults to all numerical columns in the DataFrame.
 
     Returns:
     - tuple
@@ -158,28 +192,27 @@ def preprocess_data_for_nulls(df, target_column,categorical_columns,numerical_co
     - The training data consists of instances where the target column is not null, and prediction data consists
       of instances where the target column is null.
     - Categorical columns are specified in "categorical_columns", and numerical columns in "numerical_columns".
-    - The preprocessor is a sklearn ColumnTransformer that scales numerical columns using MinMaxScaler
+    - The preprocessor is a sklearn ColumnTransformer that scales numerical columns using StandardScaler
       and encodes categorical columns using OrdinalEncoder.
     """
+    copyy = NUM_COLUMNS.copy()
+
+    if sec == 0 :
+        copyy.remove("Item_Outlet_Sales")
 
     df_train = df[df[target_column].notnull()]
     df_predict = df[df[target_column].isnull()]
-
 
     X_train = df_train.drop([target_column], axis=1)
     y_train = df_train[target_column]
 
     preprocessor = ColumnTransformer(
         transformers=[
-            ('num', MinMaxScaler(), numerical_columns),
-            ('cat', OrdinalEncoder(), categorical_columns)
+            ('num', StandardScaler(), copyy),
+            ('cat', OrdinalEncoder(), categorical_columns[:-2]),
         ])
-    
-    X_train_preprocessed = preprocessor.fit_transform(X_train)
 
-    X_predict_preprocessed = preprocessor.transform(df_predict.drop([target_column], axis=1))
-
-    return preprocessor, X_train_preprocessed, y_train, X_predict_preprocessed
+    return preprocessor, X_train, y_train, df_predict
 
 
 def load_model(preprocessor, model, X_train, y_train, X_test, y_test, metric):
@@ -284,3 +317,24 @@ def evaluate_model(model_name, preprocessor, model, X_train, y_train, X_test, y_
         print(f'The model may be underfitting as Train MSE ({train_mse:.4f}) > Test MSE ({test_mse:.4f})')
     else:
         print('The model seems to generalize well.')
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import confusion_matrix
+
+# Create a function to plot the results
+
+def plot_results(results, X_test_preprocessed, y_test):
+    
+    for model_name, result in results.items():
+        print(f"Model: {model_name}")
+        print(f"Training MSE: {result['train_mse']}")
+        print(f"Training RMSE: {result['train_rmse']}")
+        print(f"Training R^2: {result['train_r2']}")
+        print("="*50)
+        print(f"Testing MSE: {result['test_mse']}")
+        print(f"Testing RMSE: {result['test_rmse']}")
+        print(f"Testing R^2: {result['test_r2']}")
+        print("="*50)
+
+
